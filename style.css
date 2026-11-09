@@ -199,3 +199,21 @@ body.splashing { overflow: hidden; }
 @keyframes spFade { to { opacity: 1; } }
 @keyframes spLoad { to { width: 88%; } }
 @media (prefers-reduced-motion: reduce) { #splash { display: none; } }
+
+/* ---- pdf.js viewer + in-page highlights ---- */
+.vbar2 { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.vbar2[hidden] { display: none; }
+.vbar2 .grow { flex: 1; } .vbar2 button { padding: 2px 10px; }
+.vbar2 button:disabled { opacity: .4; cursor: default; }
+.vhits { color: var(--muted); }
+#vZoom { min-width: 44px; text-align: center; color: var(--muted); }
+.pdfscroll { height: 100%; overflow: auto; background: #dfe3ea; padding: 12px; }
+.pdfpage { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .25); }
+.pdfpage canvas { display: block; }
+.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.textLayer ::selection { background: rgba(36, 86, 214, .3); }
+.textLayer mark.hl { background: rgba(255, 213, 0, .5); color: transparent; border-radius: 2px; mix-blend-mode: multiply; padding: 0; }
+.textLayer mark.hl.cur { background: rgba(255, 140, 0, .62); outline: 2px solid rgba(255, 120, 0, .9); animation: hlPulse 1.1s ease-out 1; }
+@keyframes hlPulse { 0% { outline-offset: 6px; outline-color: rgba(255, 120, 0, 0); } 40% { outline-offset: 2px; outline-color: rgba(255, 120, 0, 1); } 100% { outline-offset: 0; } }
+.vload { padding: 40px; text-align: center; color: var(--muted); }

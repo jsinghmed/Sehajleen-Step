@@ -50,6 +50,7 @@
     ["ntd", "neural tube defect"], ["ivig", "intravenous immunoglobulin"], ["ffp", "fresh frozen plasma"],
   ];
 
+  const GAP_WORDS = ["of", "the", "and", "in", "to", "with", "for", "a", "an", "on", "or", "by", "at", "as", "vs"];
   const STOP_BASIC = new Set(("a an and are as at be but by for from in into is it its of on or that the to was were with").split(" "));
   // Extra filler that dominates pasted question stems.
   const STOP_Q = new Set(STOP_BASIC);
@@ -160,7 +161,7 @@
       for (const s of res.sections) cand.push({ d: s.d, i: s.i });
       for (const h of res.hits) {
         const p = this.pages[h.id];
-        const sn = this.snippet(h.id, res.terms);
+        const sn = this.snippet(h.id, res.re);
         const i = this.sectionIndexFor(p, sn.pos);
         if (i >= 0) cand.push({ d: p.d, i }); else cand.push({ d: p.d, i: -1, page: p.n });
       }
@@ -262,9 +263,17 @@
       });
       for (const [t, w] of extra) addTerm(t, w, -1);
 
-      // Coverage, phrase and heading boosts.
+      // Multi-word queries ("atrial fibrillation") must match as a phrase, not as separate words.
+      // One filler word may sit between them, and a known abbreviation (afib) counts as the phrase.
+      let strictRe = null;
+      if (core.length >= 2 && !questionMode) {
+        const gap = "(?:(?:" + GAP_WORDS.join("|") + ") )?";
+        let src = " " + core.map((t, i) => escapeRe(t) + (i === core.length - 1 ? "\\S*" : "")).join(" " + gap);
+        for (const [t, w] of extra) if (w >= 0.8) src += "| " + escapeRe(t) + " ";
+        strictRe = new RegExp(src);
+      }
       const phrase = core.length > 1 && !questionMode ? " " + toks.join(" ") + " " : null;
-      const ranked = [];
+      let ranked = [];
       for (const [id, raw] of scores) {
         const p = this.pages[id];
         if (docFilter != null && p.d !== docFilter) continue;
@@ -272,9 +281,14 @@
         let s = raw * Math.pow(Math.max(cov, 0.15), questionMode ? 1.2 : 1.8);
         if (phrase && p.norm.includes(phrase)) s *= 1.6;
         if (p.head && core.every((t) => this._headHas(p.head, t))) s *= 1.5;
-        ranked.push([id, s, cov]);
+        ranked.push([id, s, cov, !strictRe || strictRe.test(p.norm)]);
       }
       ranked.sort((a, c) => c[1] - a[1]);
+      let phraseMode = false, phraseFallback = false;
+      if (strictRe) {
+        const strict = ranked.filter((r) => r[3]);
+        if (strict.length) { ranked = strict; phraseMode = true; } else phraseFallback = true;   // nothing has the phrase: fall back to the words
+      }
 
       const counts = {};
       if (docFilter != null) { /* counts computed unfiltered below */ }
@@ -289,22 +303,28 @@
       // Matching section headings (bookmarks).
       const exact = " " + core.join(" ") + " ";
       const sections = this.sectionList
-        .filter((s) => (docFilter == null || s.d === docFilter) && (aliases.has(s.norm) || core.every((t) => this._headHas(s.norm, t))))
+        .filter((s) => (docFilter == null || s.d === docFilter) && (aliases.has(s.norm) || (phraseMode ? strictRe.test(s.norm) : core.every((t) => this._headHas(s.norm, t)))))
         .sort((a, b) => ((b.norm === exact) || aliases.has(b.norm)) - ((a.norm === exact) || aliases.has(a.norm)) || a.norm.length - b.norm.length)
         .slice(0, 6);
 
       const terms = [...core, ...[...extra.keys()].filter((t) => extra.get(t) >= 0.8)];
-      return { hits, sections, terms, counts, questionMode };
+      const re = phraseMode ? this.phraseRegex(query) : this.highlightRegex(terms);
+      return { hits, sections, terms, counts, questionMode, phraseMode, phraseFallback, re };
+    }
+
+    /** The terms worth highlighting for a query (core words + abbreviation/full-name equivalents). */
+    termsFor(query) {
+      const { core, extra } = this.parse(query);
+      return [...core, ...[...extra.keys()].filter((t) => extra.get(t) >= 0.8)];
     }
 
     /** Short text window containing the densest cluster of query terms. */
-    snippet(pageId, terms, width = 260) {
+    snippet(pageId, termsOrRe, width = 260) {
       const text = this.pages[pageId].text;
       if (!text) return { text: "(no extractable text on this page)", pos: 0 };
-      const lower = text.toLowerCase();
-      const re = new RegExp("\\b(" + variants(terms).map(escapeRe).join("|") + ")[a-z]*", "g");
+      const re = termsOrRe instanceof RegExp ? new RegExp(termsOrRe.source, "gi") : new RegExp("\\b(" + variants(termsOrRe).map(escapeRe).join("|") + ")[a-z]*", "gi");
       const pos = []; let m;
-      while ((m = re.exec(lower)) && pos.length < 400) pos.push(m.index);
+      while ((m = re.exec(text)) && pos.length < 400) { if (!m[0]) { re.lastIndex++; continue; } pos.push(m.index); }
       if (!pos.length) return { text: text.slice(0, width) + (text.length > width ? "…" : ""), pos: 0 };
       let bestStart = pos[0], bestCount = 0;
       for (let i = 0; i < pos.length; i++) {
@@ -316,6 +336,24 @@
       const end = Math.min(text.length, start + width);
       return { text: (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : ""), pos: bestStart };
     }
+
+    /** Regex matching the whole phrase as typed (for multi-word queries), or null. Used for highlighting. */
+    phraseRegex(query) {
+      const { core, extra, questionMode } = this.parse(query);
+      if (core.length < 2 || questionMode) return null;
+      const word = (t) => "(?:" + variants([t]).map(escapeRe).join("|") + ")[a-z]*";
+      const sep = "[\\s\\-/]+(?:(?:" + GAP_WORDS.join("|") + ")[\\s\\-/]+)?";
+      let src = "\\b" + core.map(word).join(sep);
+      const abbrs = [...extra.keys()].filter((t) => extra.get(t) >= 0.8);
+      if (abbrs.length) src += "|\\b(?:" + abbrs.map(escapeRe).join("|") + ")\\b";
+      return new RegExp(src, "gi");
+    }
+    /** Best highlight regex for a query: the phrase if it has several words, else the word(s). */
+    highlightRegexQ(query) { return this.phraseRegex(query) || this.highlightRegex(this.termsFor(query)); }
+    wordsRegexQ(query) { return this.highlightRegex(this.termsFor(query)); }
+
+    /** Accepts a RegExp (phrase) or an array of terms. */
+    toRegex(x) { return x instanceof RegExp ? new RegExp(x.source, "gi") : this.highlightRegex(x); }
 
     highlightRegex(terms) {
       if (!terms.length) return null;

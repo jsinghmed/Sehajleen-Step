@@ -53,6 +53,7 @@
   let current = null;        // {d, n}
   let showText = false;
   let viewPos = 1e9;      // text position of the match that opened the viewer
+  let viewTerms = null;     // words to highlight on the page being viewed
 
   // ---------- load ----------
   fetch("data/index.json")
@@ -115,7 +116,7 @@
     if (!q) { showHome(); return; }
     const t0 = performance.now();
     const res = engine.search(q, { docFilter });
-    lastTerms = res.terms;
+    lastTerms = res.re || res.terms;
     const ms = Math.round(performance.now() - t0);
     // per-PDF chips
     const chips = $("chips"); chips.innerHTML = "";
@@ -137,19 +138,19 @@
     res.sections.forEach((s) => {
       const b = document.createElement("button"); b.className = "sec";
       b.innerHTML = `${esc(s.title)} <small>· ${esc(engine.docs[s.d].title)} p.${s.page}</small>`;
-      b.onclick = () => openPage(s.d, s.page, s.pos + 1);
+      b.onclick = () => openPage(s.d, s.page, s.pos + 1, res.re || res.terms);
       $("sections").appendChild(b);
     });
 
     // results
-    const hl = engine.highlightRegex(res.terms);
+    const hl = engine.toRegex(res.re || res.terms);
     const saved = store.get("melman.saved", []);
     const frag = document.createDocumentFragment();
     // Melman repeats a lot of text across the Medicine / FM / Surgery / Peds PDFs.
     // Collapse identical passages into one card with "also in" links.
     const cards = [], seen = new Map();
     res.hits.forEach((h) => {
-      const snip = engine.snippet(h.id, res.terms);
+      const snip = engine.snippet(h.id, res.re || res.terms);
       const key = snip.text.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 90);
       const section = engine.sectionFor(engine.pages[h.id], snip.pos);
       if (key.length > 40 && seen.has(key)) { seen.get(key).alts.push({ h, snip }); return; }
@@ -157,7 +158,7 @@
       cards.push(c); if (key.length > 40) seen.set(key, c);
     });
     $("status").textContent = cards.length
-      ? `${cards.length} results${res.hits.length > cards.length ? ` (${res.hits.length - cards.length} duplicates merged)` : ""} · ${ms} ms` + (res.questionMode ? " · question mode (filler words ignored)" : "")
+      ? `${cards.length} results${res.hits.length > cards.length ? ` (${res.hits.length - cards.length} duplicates merged)` : ""} · ${ms} ms` + (res.questionMode ? " · question mode (filler words ignored)" : "") + (res.phraseMode ? " · exact phrase" : "") + (res.phraseFallback ? " · phrase not found together, showing pages with the separate words" : "")
       : "No matches. Try fewer or simpler words, or the abbreviation.";
     cards.forEach(({ h, snip, section, alts }) => {
       const sn = snip.text;
@@ -173,8 +174,8 @@
         if (e.target.classList.contains("star")) { toggleSave(h.d, h.n, q); runSearch(); return; }
         if (e.target.classList.contains("missbtn")) { window.MelmanApp.logMiss({ topic: q.length > 60 ? "" : q, pages: [{ d: engine.docs[h.d].file, n: h.n, pos: snip.pos }] }); return; }
         remember(q);
-        if (e.target.tagName === "A") { e.preventDefault(); const a = alts[+e.target.dataset.i]; openPage(a.h.d, a.h.n, a.snip.pos); return; }
-        openPage(h.d, h.n, snip.pos);
+        if (e.target.tagName === "A") { e.preventDefault(); const a = alts[+e.target.dataset.i]; openPage(a.h.d, a.h.n, a.snip.pos, res.re || res.terms); return; }
+        openPage(h.d, h.n, snip.pos, res.re || res.terms);
       });
       frag.appendChild(el);
     });
@@ -182,8 +183,10 @@
   }
 
   // ---------- viewer ----------
-  function openPage(d, n, pos) {
+  function openPage(d, n, pos, terms) {
     viewPos = pos == null ? 1e9 : pos;
+    viewTerms = terms || ($("q").value.trim() ? engine.highlightRegexQ($("q").value) : null);
+    const token = ++renderTok;
     n = Math.max(1, Math.min(n, engine.docs[d].pages));
     const changed = !current || current.d !== d || current.n !== n || $("viewer").hidden;
     current = { d, n };
@@ -198,14 +201,21 @@
     const body = $("vBody"); body.innerHTML = "";
     if (showText && pid > -1) {
       const div = document.createElement("div"); div.className = "vtext";
-      const hl = engine.highlightRegex(lastTerms);
+      const hl = engine.toRegex(viewTerms);
       const t = esc(engine.pages[pid].text || "(no extractable text on this page)");
       div.innerHTML = hl ? t.replace(hl, "<mark>$&</mark>") : t;
       body.appendChild(div);
+      setBar2(false);
     } else {
-      const f = document.createElement("iframe");   // fresh iframe so #page= always navigates
-      f.src = url + "#page=" + n + "&zoom=page-width";
-      f.title = doc.title; body.appendChild(f);
+      setBar2(true);
+      renderPdf(d, n, token).catch((err) => {
+        if (token !== renderTok) return;
+        console.warn("pdf.js unavailable, using the browser viewer:", err);
+        setBar2(false);
+        const f = document.createElement("iframe");   // fallback: browser's own viewer (no highlighting)
+        f.src = url + "#page=" + n + "&zoom=page-width"; f.title = doc.title;
+        body.innerHTML = ""; body.appendChild(f);
+      });
     }
     if (changed) log("open", { d: doc.file, n, sec: $("vSec").textContent });
     $("vText").style.background = showText ? "var(--accent-soft)" : "";
@@ -213,13 +223,126 @@
     $("vSave").textContent = isSaved ? "★ Saved" : "☆ Save";
     document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
   }
-  $("vPrev").onclick = () => current && openPage(current.d, current.n - 1);
-  $("vNext").onclick = () => current && openPage(current.d, current.n + 1);
-  $("vPage").onchange = () => current && openPage(current.d, +$("vPage").value || 1);
-  $("vText").onclick = () => { showText = !showText; current && openPage(current.d, current.n, viewPos); };
+
+  // ---------- in-page highlighting viewer (pdf.js) ----------
+  const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/";
+  let pdfjsP = null, renderTok = 0, zoom = 1, marks = [], markIdx = -1;
+  const docCache = new Map();
+  const ZOOMS = [0.6, 0.8, 1, 1.25, 1.5, 2, 3];
+
+  function loadPdfjs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if (!pdfjsP) pdfjsP = new Promise((res, rej) => {
+      const s = document.createElement("script"); s.src = PDFJS + "pdf.min.js";
+      s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.js"; res(window.pdfjsLib); };
+      s.onerror = () => { pdfjsP = null; rej(new Error("could not load pdf.js")); };
+      document.head.appendChild(s);
+    });
+    return pdfjsP;
+  }
+  function getPdf(file) {
+    if (!docCache.has(file)) {
+      docCache.set(file, loadPdfjs().then((lib) => lib.getDocument({ url: encodeURI(file) }).promise).catch((e) => { docCache.delete(file); throw e; }));
+      if (docCache.size > 3) { const k = docCache.keys().next().value; docCache.get(k).then((p) => p.destroy()).catch(() => {}); docCache.delete(k); }
+    }
+    return docCache.get(file);
+  }
+  function setBar2(on) { $("vBar2").hidden = !on; }
+
+  async function renderPdf(d, n, token) {
+    const doc = engine.docs[d], body = $("vBody");
+    body.innerHTML = '<div class="vload">Loading page…</div>';
+    const lib = await loadPdfjs(), pdf = await getPdf(doc.file);
+    if (token !== renderTok) return;
+    const page = await pdf.getPage(n);
+    if (token !== renderTok) return;
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: (Math.max(260, body.clientWidth - 24) / base.width) * zoom });
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const scroller = document.createElement("div"); scroller.className = "pdfscroll";
+    const wrap = document.createElement("div"); wrap.className = "pdfpage"; wrap.style.width = vp.width + "px"; wrap.style.height = vp.height + "px";
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(vp.width * dpr); canvas.height = Math.floor(vp.height * dpr);
+    canvas.style.width = vp.width + "px"; canvas.style.height = vp.height + "px";
+    const tl = document.createElement("div"); tl.className = "textLayer";
+    wrap.append(canvas, tl); scroller.appendChild(wrap);
+    body.innerHTML = ""; body.appendChild(scroller);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
+    if (token !== renderTok) return;
+    const textDivs = [];
+    await lib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs }).promise;
+    if (token !== renderTok) return;
+    highlightPage(textDivs, tl, scroller, d, n);
+  }
+
+  function highlightPage(textDivs, tl, scroller, d, n) {
+    marks = []; markIdx = -1;
+    const re = viewTerms ? engine.toRegex(viewTerms) : null;
+    let total = 0; const starts = textDivs.map((el) => { const s = total; total += el.textContent.length; return s; });
+    if (re) {
+      // Match on the whole page text (divs joined by a space) so phrases that wrap across lines are found too.
+      const texts = textDivs.map((el) => el.textContent);
+      const offs = []; let full = "";
+      texts.forEach((t) => { offs.push(full.length); full += t + " "; });
+      const ranges = texts.map(() => []);
+      let m; re.lastIndex = 0;
+      while ((m = re.exec(full))) {
+        if (!m[0]) { re.lastIndex++; continue; }
+        const a0 = m.index, a1 = m.index + m[0].length;
+        texts.forEach((t, k) => {
+          const s = Math.max(a0, offs[k]), e = Math.min(a1, offs[k] + t.length);
+          if (e > s) ranges[k].push([s - offs[k], e - offs[k]]);
+        });
+      }
+      textDivs.forEach((el, k) => {
+        if (!ranges[k].length) return;
+        const t = texts[k]; let out = "", last = 0;
+        ranges[k].forEach(([s, e]) => { out += esc(t.slice(last, s)) + '<mark class="hl">' + esc(t.slice(s, e)) + "</mark>"; last = e; });
+        el.innerHTML = out + esc(t.slice(last));
+      });
+    }
+    marks = [...tl.querySelectorAll("mark.hl")];
+    marks.forEach((m) => { const div = m.closest("span"); m._rel = (starts[textDivs.indexOf(div)] || 0) / Math.max(1, total); });
+    const hits = $("vHits");
+    if (!viewTerms) hits.textContent = "";
+    else if (!total) hits.textContent = "No searchable text on this page";
+    else hits.textContent = marks.length ? `${marks.length} match${marks.length === 1 ? "" : "es"} on this page` : "No matches on this page";
+    $("vHPrev").disabled = $("vHNext").disabled = marks.length < 2;
+    $("vZoom").textContent = zoom === 1 ? "Fit" : Math.round(zoom * 100) + "%";
+    if (marks.length) {   // start at the match closest to the snippet you clicked
+      let best = 0;
+      if (viewPos < 1e9) {
+        const pid = engine.pageId(d, n), len = pid > -1 ? engine.pages[pid].text.length : 0;
+        const target = len ? viewPos / len : 0; let bd = 9;
+        marks.forEach((m, i) => { const dd = Math.abs(m._rel - target); if (dd < bd) { bd = dd; best = i; } });
+      }
+      gotoMark(best);
+    }
+  }
+  function gotoMark(i) {
+    if (!marks.length) return;
+    markIdx = (i + marks.length) % marks.length;
+    marks.forEach((m, k) => m.classList.toggle("cur", k === markIdx));
+    marks[markIdx].scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    const h = $("vHits"); h.textContent = `${markIdx + 1} of ${marks.length} on this page`;
+  }
+  $("vHPrev").onclick = () => gotoMark(markIdx - 1);
+  $("vHNext").onclick = () => gotoMark(markIdx + 1);
+  function setZoom(dir) {
+    let i = ZOOMS.indexOf(zoom); if (i < 0) i = 2;
+    const nz = ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i + dir))];
+    if (nz !== zoom && current) { zoom = nz; openPage(current.d, current.n, viewPos, viewTerms); }
+  }
+  $("vZoomIn").onclick = () => setZoom(1); $("vZoomOut").onclick = () => setZoom(-1);
+  let rsz; window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setTimeout(() => { if (current && !$("viewer").hidden && !showText && $("vBody").querySelector(".pdfpage")) openPage(current.d, current.n, viewPos, viewTerms); }, 250); });
+
+  $("vPrev").onclick = () => current && openPage(current.d, current.n - 1, null, viewTerms);
+  $("vNext").onclick = () => current && openPage(current.d, current.n + 1, null, viewTerms);
+  $("vPage").onchange = () => current && openPage(current.d, +$("vPage").value || 1, null, viewTerms);
+  $("vText").onclick = () => { showText = !showText; current && openPage(current.d, current.n, viewPos, viewTerms); };
   $("vMiss").onclick = () => current && window.MelmanApp.logMiss({ topic: $("q").value.trim().length > 60 ? "" : $("q").value.trim(), pages: [{ d: engine.docs[current.d].file, n: current.n, pos: viewPos < 1e9 ? viewPos : 0 }] });
   $("vClose").onclick = () => { $("viewer").hidden = true; };
-  $("vSave").onclick = () => { if (current) { toggleSave(current.d, current.n, $("q").value); openPage(current.d, current.n, viewPos); runSearch(); } };
+  $("vSave").onclick = () => { if (current) { toggleSave(current.d, current.n, $("q").value); openPage(current.d, current.n, viewPos, viewTerms); runSearch(); } };
 
   // ---------- saved ----------
   function toggleSave(d, n, q) {

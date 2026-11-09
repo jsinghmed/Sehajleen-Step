@@ -39,7 +39,7 @@
 
   /** Render flattened Melman text as bullets, with the given terms highlighted. */
   function bullets(text, terms) {
-    const hl = terms && terms.length ? A.engine.highlightRegex(terms) : null;
+    const hl = terms ? A.engine.toRegex(terms) : null;
     const parts = text.split(/\s-\s/).map((s) => s.trim()).filter(Boolean);
     const f = (s) => (hl ? esc(s).replace(hl, "<mark>$&</mark>") : esc(s));
     if (parts.length < 2) return `<p>${f(text)}</p>`;
@@ -54,10 +54,10 @@
 
   const pageLabel = (ref) => `${short(A.engine.docs[docIndex(ref.d)]?.title || ref.d)} p.${ref.n}`;
   const pageLinks = (pages) => pages.map((p, i) => `<a href="#" class="plink" data-i="${i}">${esc(pageLabel(p))}</a>`).join(" · ");
-  function wireLinks(root, pages) {
+  function wireLinks(root, pages, topic) {
     root.querySelectorAll(".plink").forEach((a) => a.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation(); const p = pages[+a.dataset.i]; const di = docIndex(p.d);
-      if (di >= 0) A.openPage(di, p.n, p.pos);
+      if (di >= 0) A.openPage(di, p.n, p.pos, topic ? A.engine.highlightRegexQ(topic) : undefined);
     }));
   }
 
@@ -179,7 +179,7 @@
         ${last.note ? `<div class="hint">“${esc(last.note)}”</div>` : ""}
         <div class="alts">${m.pages.length ? pageLinks(m.pages) : "No page attached"}</div>
         <div class="acts"><button data-a="review">Review now</button><button data-a="search">Search it</button><button data-a="master">Mastered ✓</button><button data-a="del" class="plain">Delete</button></div>`;
-      wireLinks(el, m.pages);
+      wireLinks(el, m.pages, m.topic);
       el.querySelector('[data-a="review"]').onclick = () => { mView = "quiz"; quiz = { queue: [m.id], i: 0, revealed: false, right: 0, shaky: 0 }; renderMissed(); };
       el.querySelector('[data-a="search"]').onclick = () => { A.showTab("search"); A.search(m.topic); };
       el.querySelector('[data-a="master"]').onclick = () => { update(m.id, (x) => { x.mastered = true; }); renderMissed(); };
@@ -240,7 +240,7 @@
         : `<p>Before you look: say out loud what the answer and the key discriminating feature are.</p><div class="acts"><button id="qShow" class="primary">Show Melman’s explanation</button></div>`}
       </div>`;
     if (!quiz.revealed) { $("qShow").onclick = () => { quiz.revealed = true; renderMissed(); }; return; }
-    wireLinks(body, m.pages);
+    wireLinks(body, m.pages, m.topic);
     body.querySelectorAll("[data-r]").forEach((b) => b.addEventListener("click", () => {
       const r = b.dataset.r;
       update(m.id, (x) => {
@@ -289,7 +289,7 @@
         <select class="csel">${res.items.map((x, i) => `<option value="${i}" ${i === cmp[ik] ? "selected" : ""}>${esc((x.title || "page " + x.page).slice(0, 50))} — ${esc(short(E.docs[x.d].title))} p.${x.page}</option>`).join("")}</select>
         <div class="cmeta"><a href="${encodeURI(E.docs[it.d].file)}#page=${it.page}" target="_blank" rel="noopener">Open PDF p.${it.page} ↗</a>${it.alts.length ? ` · also in ${it.alts.map((a) => esc(short(E.docs[a.d].title)) + " p." + a.page).join(", ")}` : ""}
           · <a href="#" class="cmiss">✗ Missed</a></div>
-        <div class="cbody">${bullets(it.text, res.terms)}</div>`;
+        <div class="cbody">${bullets(it.text, res.re || res.terms)}</div>`;
       col.querySelector(".csel").onchange = (e) => { cmp[ik] = +e.target.value; drawCompare(); };
       col.querySelector(".cmiss").onclick = (e) => { e.preventDefault(); openDialog({ topic: cmp.a + " vs " + cmp.b, pages: [{ d: E.docs[it.d].file, n: it.page, pos: it.i >= 0 ? E.docs[it.d].toc[it.i][3] : 0 }] }); };
       grid.appendChild(col);
