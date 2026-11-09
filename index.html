@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melman Search</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Melman Search</div>
+  <div class="searchwrap">
+    <input id="q" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Search a concept, or paste a whole QBank question…  ( press / )" autofocus>
+    <select id="docFilter" title="Limit to one PDF"><option value="">All PDFs</option></select>
+  </div>
+  <nav class="tabs">
+    <button data-tab="search" class="on">Search</button>
+    <button data-tab="browse">Browse</button>
+    <button data-tab="saved">Saved <span id="savedCount"></span></button>
+    <button data-tab="missed">Missed <span id="missedCount"></span></button>
+    <button data-tab="compare">Compare</button>
+    <button data-tab="stats">Stats</button>
+  </nav>
+</header>
+
+<main class="layout">
+  <section id="left" class="left">
+    <div id="tab-search">
+      <div id="status" class="status"></div>
+      <div id="chips" class="chips"></div>
+      <div id="sections" class="sections"></div>
+      <div id="results"></div>
+    </div>
+    <div id="tab-browse" hidden></div>
+    <div id="tab-saved" hidden></div>
+    <div id="tab-missed" hidden></div>
+    <div id="tab-compare" hidden></div>
+    <div id="tab-stats" hidden></div>
+  </section>
+
+  <section id="viewer" class="viewer" hidden>
+    <div class="vbar">
+      <button id="vClose" class="mobile-only" title="Back to results">←</button>
+      <div class="vtitle"><b id="vDoc"></b><span id="vSec"></span></div>
+      <div class="vctrl">
+        <button id="vPrev" title="Previous page">‹</button>
+        <span>p. <input id="vPage" type="number" min="1" value="1"></span>
+        <button id="vNext" title="Next page">›</button>
+        <button id="vText" title="Show extracted text with highlights">Text</button>
+        <button id="vSave" title="Save this page">☆ Save</button>
+        <button id="vMiss" title="Log a missed question about this page">✗ Missed</button>
+        <a id="vOpen" target="_blank" rel="noopener" title="Open PDF in a new tab">Open ↗</a>
+      </div>
+    </div>
+    <div id="vBody" class="vbody"></div>
+  </section>
+</main>
+
+<script src="search.js"></script>
+<script src="app.js"></script>
+<script src="study.js"></script>
+</body>
+</html>
