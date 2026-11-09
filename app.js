@@ -163,6 +163,7 @@
     cards.forEach(({ h, snip, section, alts }) => {
       const sn = snip.text;
       const el = document.createElement("div"); el.className = "card";
+      el.addEventListener("mouseenter", () => warm(h.d), { once: true });
       const isSaved = saved.some((s) => s.d === engine.docs[h.d].file && s.n === h.n);
       el.innerHTML =
         `<div class="meta"><span><b>${esc(engine.docs[h.d].title)}</b> · p.${h.n}</span>` +
@@ -242,16 +243,23 @@
   }
   function getPdf(file) {
     if (!docCache.has(file)) {
-      docCache.set(file, loadPdfjs().then((lib) => lib.getDocument({ url: encodeURI(file) }).promise).catch((e) => { docCache.delete(file); throw e; }));
+      docCache.set(file, loadPdfjs().then((lib) => lib.getDocument({ url: encodeURI(file), disableAutoFetch: true, rangeChunkSize: 262144 }).promise).catch((e) => { docCache.delete(file); throw e; }));
       if (docCache.size > 3) { const k = docCache.keys().next().value; docCache.get(k).then((p) => p.destroy()).catch(() => {}); docCache.delete(k); }
     }
     return docCache.get(file);
   }
+  // warm-up: fetch the viewer library when the browser is idle, and open the top result's PDF in the background
+  (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => loadPdfjs().catch(() => {}));
+  function warm(d) { try { if (d != null) getPdf(engine.docs[d].file).catch(() => {}); } catch (e) {} }
   function setBar2(on) { $("vBar2").hidden = !on; }
 
   async function renderPdf(d, n, token) {
     const doc = engine.docs[d], body = $("vBody");
-    body.innerHTML = '<div class="vload">Loading page…</div>';
+    const pid0 = engine.pages.findIndex((p) => p.d === d && p.n === n);
+    if (pid0 > -1) {   // show the extracted text immediately; the real page replaces it when ready
+      const hl0 = engine.toRegex(viewTerms), t0 = esc(engine.pages[pid0].text || "");
+      body.innerHTML = '<div class="vload">Loading PDF page…</div><div class="vtext vtmp">' + (hl0 ? t0.replace(hl0, "<mark>$&</mark>") : t0) + "</div>";
+    } else body.innerHTML = '<div class="vload">Loading page…</div>';
     const lib = await loadPdfjs(), pdf = await getPdf(doc.file);
     if (token !== renderTok) return;
     const page = await pdf.getPage(n);
@@ -267,10 +275,11 @@
     const tl = document.createElement("div"); tl.className = "textLayer";
     wrap.append(canvas, tl); scroller.appendChild(wrap);
     body.innerHTML = ""; body.appendChild(scroller);
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
-    if (token !== renderTok) return;
     const textDivs = [];
-    await lib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs }).promise;
+    await Promise.all([
+      page.render({ canvasContext: canvas.getContext("2d"), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise,
+      lib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs }).promise,
+    ]);
     if (token !== renderTok) return;
     highlightPage(textDivs, tl, scroller, d, n);
   }
