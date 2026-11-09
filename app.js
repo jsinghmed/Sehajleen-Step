@@ -1,3 +1,43 @@
+/* ---------- splash / loading screen ---------- */
+(function splash() {
+  const el = document.getElementById("splash"); if (!el) return;
+  const brand = document.querySelector("#brandLogo .logoimg");
+  let seen = null; try { seen = sessionStorage.getItem("melman.splash"); } catch (e) { /* private mode */ }
+  const force = /[?&]splash\b/.test(location.search);
+  if ((seen && !force) || matchMedia("(prefers-reduced-motion: reduce)").matches) { el.remove(); return; }   // once per browser session
+  document.body.classList.add("splashing"); brand.classList.add("is-hidden");
+  const t0 = performance.now(), MIN = 2600; let left = false;
+
+  function fly() {
+    el.classList.add("sp-leave");
+    const L = document.getElementById("spLogo"), sr = L.getBoundingClientRect(), hr = brand.getBoundingClientRect();
+    const s = hr.width / sr.width, dx = hr.left + hr.width / 2 - (sr.left + sr.width / 2), dy = hr.top + hr.height / 2 - (sr.top + sr.height / 2);
+    L.style.transition = "transform .95s cubic-bezier(.65,0,.2,1)";
+    L.style.transform = `translate(${dx}px,${dy}px) scale(${s})`;
+    let ended = false;
+    const end = () => { if (ended) return; ended = true; brand.classList.remove("is-hidden"); el.remove(); document.body.classList.remove("splashing"); };
+    L.addEventListener("transitionend", (e) => { if (e.target === L && e.propertyName === "transform") end(); });
+    setTimeout(end, 1400);
+  }
+  function leave(msg, delay) {
+    if (left) return; left = true;
+    try { sessionStorage.setItem("melman.splash", "1"); } catch (e) { /* ignore */ }
+    setTimeout(() => {                       // let the bar be seen filling, then finish it
+      if (msg) document.getElementById("spMsg").textContent = msg;
+      const bar = document.getElementById("spBar");
+      const w = getComputedStyle(bar).width; bar.style.animation = "none"; bar.style.width = w; bar.offsetWidth;
+      bar.style.transition = "width .35s ease"; bar.style.width = "100%";
+      setTimeout(fly, 650);
+    }, delay);
+  }
+  document.addEventListener("melman:ready", () => {
+    const E = window.MelmanApp && window.MelmanApp.engine;
+    leave(E ? `${E.docs.length} PDFs · ${E.pages.length.toLocaleString()} pages ready` : "Ready", Math.max(0, MIN - (performance.now() - t0)));
+  }, { once: true });
+  document.addEventListener("melman:error", () => leave("Couldn't load the library", 300), { once: true });
+  setTimeout(() => leave("", 0), 9000);   // safety net
+})();
+
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
@@ -18,7 +58,7 @@
   fetch("data/index.json")
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then((data) => {
-      if (!data.pages.length) { $("status").textContent = "No PDFs indexed yet. Add files to /pdfs and run build_index.py."; return; }
+      if (!data.pages.length) { $("status").textContent = "No PDFs indexed yet. Add files to /pdfs and run build_index.py."; document.dispatchEvent(new CustomEvent("melman:error")); return; }
       engine = new MelmanSearch.Engine(data);
       engine.docs.forEach((d, i) => {
         const o = document.createElement("option"); o.value = i; o.textContent = d.title; $("docFilter").appendChild(o);
@@ -28,7 +68,7 @@
       const q = decodeURIComponent((location.hash.match(/[#&]q=([^&]*)/) || [])[1] || "");
       if (q) { $("q").value = q; runSearch(); } else showHome();
     })
-    .catch(() => { $("status").textContent = "Couldn't load data/index.json. Run build_index.py, and open the site through a web server (not file://)."; });
+    .catch(() => { document.dispatchEvent(new CustomEvent("melman:error")); $("status").textContent = "Couldn't load data/index.json. Run build_index.py, and open the site through a web server (not file://)."; });
 
   // ---------- search ----------
   let timer;
